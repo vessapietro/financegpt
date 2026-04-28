@@ -1,0 +1,1 @@
+export default function Page(){return <main style={{padding:40,fontFamily:"Arial",background:"#0f172a",minHeight:"100vh",color:"white"}}><h1>FinanceGPT</h1><p>App recriado com sucesso.</p></main>}
