@@ -223,6 +223,7 @@ export default function Page() {
   const [loaded, setLoaded] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("");
+  const [isAiThinking, setIsAiThinking] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
 
   useEffect(() => {
@@ -297,11 +298,54 @@ export default function Page() {
     }
   }
 
-  function processMessage(text: string) {
+  async function askChatGPT(userMessage: string) {
+    setIsAiThinking(true);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          message: userMessage,
+          context: {
+            currentMonthKey,
+            totals,
+            categories,
+            recentTransactions: currentTransactions.slice(0, 10)
+          }
+        })
+      });
+
+      const data = await response.json();
+
+      setChat((current) => [
+        ...current,
+        {
+          role: "app",
+          text: data.reply || "Não consegui responder agora."
+        }
+      ]);
+    } catch {
+      setChat((current) => [
+        ...current,
+        {
+          role: "app",
+          text: "Erro ao conectar com o ChatGPT."
+        }
+      ]);
+    } finally {
+      setIsAiThinking(false);
+    }
+  }
+
+  async function processMessage(text: string) {
     const trimmed = text.trim();
     if (!trimmed) return;
 
     setChat((current) => [...current, { role: "user", text: trimmed }]);
+    setMessage("");
 
     if (isCancelCommand(trimmed)) {
       const last = transactions[0];
@@ -310,41 +354,38 @@ export default function Page() {
       } else {
         setChat((current) => [...current, { role: "app", text: "Não existe lançamento para cancelar." }]);
       }
-      setMessage("");
       return;
     }
 
     const value = extractValue(trimmed);
     const isIncome = /\b(recebi|recebido|entrada|pix recebido|transferência recebida|transferencia recebida)\b/i.test(trimmed);
 
-    if (!value) {
-      setChat((current) => [...current, { role: "app", text: "Não identifiquei um valor nessa mensagem. Tente: gastei 54,60 no mercado." }]);
-      setMessage("");
+    if (value) {
+      const transaction: Transaction = {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        date: formatDateLabel(new Date()),
+        monthKey: getCurrentMonthKey(),
+        local: detectLocal(trimmed, value),
+        value,
+        category: isIncome ? "💰 Receita" : detectCategory(trimmed),
+        type: isIncome ? "income" : "expense",
+        source: "chat",
+      };
+
+      setTransactions((current) => [transaction, ...current]);
+      setChat((current) => [
+        ...current,
+        {
+          role: "app",
+          text: isIncome
+            ? `Receita registrada: ${formatBRL(value)}.`
+            : `Gasto registrado em ${transaction.category}: ${formatBRL(value)}.`,
+        },
+      ]);
       return;
     }
 
-    const transaction: Transaction = {
-      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      date: formatDateLabel(new Date()),
-      monthKey: getCurrentMonthKey(),
-      local: detectLocal(trimmed, value),
-      value,
-      category: isIncome ? "💰 Receita" : detectCategory(trimmed),
-      type: isIncome ? "income" : "expense",
-      source: "chat",
-    };
-
-    setTransactions((current) => [transaction, ...current]);
-    setChat((current) => [
-      ...current,
-      {
-        role: "app",
-        text: isIncome
-          ? `Receita registrada: ${formatBRL(value)}.`
-          : `Gasto registrado em ${transaction.category}: ${formatBRL(value)}.`,
-      },
-    ]);
-    setMessage("");
+    await askChatGPT(trimmed);
   }
 
   function handleVoiceInput() {
@@ -409,7 +450,7 @@ export default function Page() {
     <main className="min-h-screen bg-slate-950 p-4 text-white md:p-8">
       <div className="mx-auto grid max-w-7xl gap-6">
         <div className="rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-4 text-sm text-white">
-          ✅ FinanceGPT atualizado: valores corrigidos + áudio ativado.
+          ✅ FinanceGPT atualizado: valores corrigidos + áudio + ChatGPT integrado.
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -491,6 +532,7 @@ export default function Page() {
                   <h2 className="text-xl font-semibold text-white">Chat financeiro</h2>
                   <p className="mb-2 mt-1 text-sm text-slate-200">Texto ou áudio. Ex: gastei 54,60 no Nils Pizza</p>
                   {voiceStatus && <p className={isListening ? "mb-3 text-sm text-emerald-300" : "mb-3 text-sm text-slate-200"}>{voiceStatus}</p>}
+                  {isAiThinking && <p className="mb-3 text-sm text-emerald-300">ChatGPT pensando...</p>}
 
                   <div className="mb-4 flex-1 space-y-3 overflow-auto">
                     {chat.map((item, index) => (
@@ -505,7 +547,7 @@ export default function Page() {
                       value={message}
                       onChange={(event) => setMessage(event.target.value)}
                       onKeyDown={(event) => event.key === "Enter" && processMessage(message)}
-                      placeholder="Digite seu gasto..."
+                      placeholder="Digite seu gasto ou pergunta..."
                       className="min-w-0 flex-1 rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-white placeholder:text-slate-400"
                     />
                     <button
