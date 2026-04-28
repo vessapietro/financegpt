@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type TransactionType = "expense" | "income" | "investment";
 
@@ -20,13 +20,36 @@ type ChatMessage = {
   text: string;
 };
 
+type SpeechRecognitionConstructor = new () => SpeechRecognition;
+type SpeechRecognition = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onstart: (() => void) | null;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+type SpeechRecognitionEvent = {
+  results: ArrayLike<ArrayLike<{ transcript: string }>>;
+};
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
+
 const monthNames = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
 
 const categoryTargets = [
-  { name: "🍔 Alimentação", meta: 500, keywords: ["pizza", "restaurante", "lanche", "ifood", "comida", "café", "cafe", "nils"] },
-  { name: "🛒 Mercado", meta: 700, keywords: ["mercado", "supermercado", "angeloni", "super festival", "festival", "festval"] },
+  { name: "🍔 Alimentação", meta: 500, keywords: ["pizza", "restaurante", "lanche", "ifood", "comida", "café", "cafe", "nils", "padaria"] },
+  { name: "🛒 Mercado", meta: 700, keywords: ["mercado", "supermercado", "angeloni", "super festival", "festival", "festval", "condor"] },
   { name: "🎉 Lazer", meta: 400, keywords: ["balada", "cinema", "bar", "show", "festa", "lazer"] },
-  { name: "🚗 Transporte", meta: 300, keywords: ["99", "99ride", "uber", "corrida", "transporte", "estacionamento"] },
+  { name: "🚗 Transporte", meta: 300, keywords: ["99", "99ride", "uber", "corrida", "transporte", "estacionamento", "posto", "gasolina"] },
   { name: "🤖 Assinaturas", meta: 180, keywords: ["assinatura", "netflix", "spotify", "icloud", "chatgpt"] },
   { name: "🏛️ Impostos", meta: 650, keywords: ["das", "darf", "imposto"] },
   { name: "💼 Contador", meta: 250, keywords: ["contador", "contabilidade"] },
@@ -40,11 +63,10 @@ const initialTransactions: Transaction[] = [
   { id: "1", date: "28/04", monthKey: "Abr/2026", local: "Supermercado Angeloni", value: 7.99, category: "🛒 Mercado", type: "expense", source: "manual" },
   { id: "2", date: "28/04", monthKey: "Abr/2026", local: "Nils Pizza", value: 54.6, category: "🍔 Alimentação", type: "expense", source: "manual" },
   { id: "3", date: "27/04", monthKey: "Abr/2026", local: "99", value: 12.06, category: "🚗 Transporte", type: "expense", source: "manual" },
-  { id: "4", date: "27/04", monthKey: "Abr/2026", local: "Balada", value: 36, category: "🎉 Lazer", type: "expense", source: "manual" },
 ];
 
 const defaultChat: ChatMessage[] = [
-  { role: "app", text: "Dashboard financeiro ativo. Envie um gasto por texto, exemplo: gastei 54,60 no Nils Pizza." },
+  { role: "app", text: "Dashboard financeiro ativo. Envie um gasto por texto ou áudio. Ex: gastei 54,60 no Nils Pizza." },
 ];
 
 function formatBRL(value: number) {
@@ -63,36 +85,82 @@ function getCurrentMonthKey() {
   return getMonthKeyFromDate(new Date());
 }
 
-function parseMoney(text: string) {
-  const cleaned = String(text).replace(/r\$\s*/i, "").trim();
-  if (!cleaned) return 0;
-  if (cleaned.includes(",")) return Number(cleaned.replace(/\./g, "").replace(",", "."));
-  return Number(cleaned);
-}
-
 function normalizeSpeechNumbers(text: string) {
   return String(text)
+    .replace(/\bzero\b/gi, "0")
+    .replace(/\bum\b/gi, "1")
+    .replace(/\buma\b/gi, "1")
+    .replace(/\bdois\b/gi, "2")
+    .replace(/\bduas\b/gi, "2")
+    .replace(/\btrês\b/gi, "3")
+    .replace(/\btres\b/gi, "3")
+    .replace(/\bquatro\b/gi, "4")
+    .replace(/\bcinco\b/gi, "5")
+    .replace(/\bseis\b/gi, "6")
+    .replace(/\bsete\b/gi, "7")
+    .replace(/\boito\b/gi, "8")
+    .replace(/\bnove\b/gi, "9")
+    .replace(/\bdez\b/gi, "10")
+    .replace(/\bonze\b/gi, "11")
+    .replace(/\bdoze\b/gi, "12")
+    .replace(/\btreze\b/gi, "13")
+    .replace(/\bcatorze\b/gi, "14")
+    .replace(/\bquatorze\b/gi, "14")
+    .replace(/\bquinze\b/gi, "15")
+    .replace(/\bdezesseis\b/gi, "16")
+    .replace(/\bdezessete\b/gi, "17")
+    .replace(/\bdezoito\b/gi, "18")
+    .replace(/\bdezenove\b/gi, "19")
+    .replace(/\bvinte e quatro\b/gi, "24")
+    .replace(/\btrinta e seis\b/gi, "36")
+    .replace(/\bcinquenta e quatro\b/gi, "54")
+    .replace(/\bsetenta e quatro\b/gi, "74")
+    .replace(/\bduzentos e vinte e quatro\b/gi, "224")
     .replace(/\bonze e setenta e um\b/gi, "11,71")
     .replace(/\bdoze e seis\b/gi, "12,06")
     .replace(/\bdoze e zero seis\b/gi, "12,06")
     .replace(/\bcinquenta e quatro e sessenta\b/gi, "54,60")
     .replace(/\bsetenta e quatro e sessenta e oito\b/gi, "74,68")
-    .replace(/\bsete e noventa e nove\b/gi, "7,99")
-    .replace(/\btrinta e seis\b/gi, "36")
-    .replace(/\bduzentos e vinte e quatro\b/gi, "224");
+    .replace(/\bsete e noventa e nove\b/gi, "7,99");
+}
+
+function parseMoney(raw: string) {
+  const cleaned = String(raw)
+    .replace(/r\$\s*/i, "")
+    .replace(/\s/g, "")
+    .trim();
+
+  if (!cleaned) return 0;
+
+  if (cleaned.includes(",")) {
+    return Number(cleaned.replace(/\./g, "").replace(",", "."));
+  }
+
+  return Number(cleaned);
 }
 
 function extractValue(text: string) {
   const normalized = normalizeSpeechNumbers(text);
-  const matches = normalized.match(/r\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})?|r\$\s*\d+(?:[.,]\d{1,2})?|\d{1,3}(?:\.\d{3})*,\d{2}|\d+[.,]\d{1,2}/gi);
+  const currencyOrDecimal = normalized.match(/r\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})?|r\$\s*\d+(?:[.,]\d{1,2})?|\d{1,3}(?:\.\d{3})*,\d{2}|\d+[.,]\d{1,2}/gi);
 
-  if (matches?.length) {
-    const values = matches.map(parseMoney).filter((value) => Number.isFinite(value) && value > 0);
-    return values[0] || 0;
+  if (currencyOrDecimal?.length) {
+    const values = currencyOrDecimal
+      .map(parseMoney)
+      .filter((value) => Number.isFinite(value) && value > 0);
+    if (values.length) return values[0];
   }
 
-  const integer = normalized.match(/(?:gastei|gasto|paguei|recebi|recebido|custou|valor foi)\s+(?:r\$\s*)?(\d+)/i);
-  if (integer?.[1]) return Number(integer[1]);
+  const integerAfterVerb = normalized.match(/(?:gastei|gasto|paguei|recebi|recebido|custou|valor foi|foi|deu)\s+(?:r\$\s*)?(\d+)/i);
+  if (integerAfterVerb?.[1]) {
+    const value = Number(integerAfterVerb[1]);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }
+
+  const currencyInteger = normalized.match(/r\$\s*(\d+)/i);
+  if (currencyInteger?.[1]) {
+    const value = Number(currencyInteger[1]);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }
 
   return 0;
 }
@@ -104,12 +172,15 @@ function detectCategory(text: string) {
 }
 
 function detectLocal(text: string, value: number) {
-  const valueBR = String(value).replace(".", ",");
   const normalized = normalizeSpeechNumbers(text);
+  const valueBR = String(value).replace(".", ",");
+  const valueUS = String(value);
   const cleaned = normalized
+    .replace(new RegExp(`r\\$\\s*${valueBR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "gi"), " ")
+    .replace(new RegExp(`r\\$\\s*${valueUS.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "gi"), " ")
     .replace(valueBR, " ")
-    .replace(String(value), " ")
-    .replace(/\b(gastei|gasto|paguei|recebi|recebido|custou|valor|foi|no|na|em|de|do|da|num|numa|com|cartão|cartao|pix|reais|real)\b/gi, " ")
+    .replace(valueUS, " ")
+    .replace(/\b(gastei|gasto|paguei|recebi|recebido|custou|valor|foi|deu|no|na|em|de|do|da|num|numa|com|cartão|cartao|pix|reais|real)\b/gi, " ")
     .replace(/[.,;:!?]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -119,6 +190,11 @@ function detectLocal(text: string, value: number) {
 
 function isCancelCommand(text: string) {
   return /\b(cancelar|cancela|desfazer|apagar|remover|excluir)\b.*\b(último|ultimo|gasto|lançamento|lancamento|compra)\b/i.test(String(text));
+}
+
+function getSpeechRecognition() {
+  if (typeof window === "undefined") return null;
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
 }
 
 function loadStored<T>(key: string, fallback: T): T {
@@ -145,6 +221,9 @@ export default function Page() {
   const [message, setMessage] = useState("");
   const [chat, setChat] = useState<ChatMessage[]>(defaultChat);
   const [loaded, setLoaded] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState("");
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
 
   useEffect(() => {
     setTransactions(loadStored("financegpt.transactions", initialTransactions));
@@ -239,7 +318,7 @@ export default function Page() {
     const isIncome = /\b(recebi|recebido|entrada|pix recebido|transferência recebida|transferencia recebida)\b/i.test(trimmed);
 
     if (!value) {
-      setChat((current) => [...current, { role: "app", text: "Não identifiquei um valor nessa mensagem." }]);
+      setChat((current) => [...current, { role: "app", text: "Não identifiquei um valor nessa mensagem. Tente: gastei 54,60 no mercado." }]);
       setMessage("");
       return;
     }
@@ -268,6 +347,55 @@ export default function Page() {
     setMessage("");
   }
 
+  function handleVoiceInput() {
+    const SpeechRecognition = getSpeechRecognition();
+
+    if (!SpeechRecognition) {
+      setVoiceStatus("Seu navegador não suporta áudio aqui. Use Chrome ou Edge e permita o microfone.");
+      return;
+    }
+
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+      setVoiceStatus("Áudio parado.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "pt-BR";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      setVoiceStatus("Ouvindo... fale o gasto agora.");
+    };
+
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .map((result) => result[0]?.transcript || "")
+        .join(" ")
+        .trim();
+
+      setMessage(transcript);
+      processMessage(transcript);
+      setVoiceStatus(transcript ? `Áudio identificado: “${transcript}”` : "Não consegui entender o áudio.");
+    };
+
+    recognition.onerror = () => {
+      setIsListening(false);
+      setVoiceStatus("Não consegui acessar o microfone ou entender o áudio.");
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  }
+
   function clearData() {
     const confirmed = window.confirm("Tem certeza que deseja apagar os dados salvos?");
     if (!confirmed) return;
@@ -281,7 +409,7 @@ export default function Page() {
     <main className="min-h-screen bg-slate-950 p-4 text-white md:p-8">
       <div className="mx-auto grid max-w-7xl gap-6">
         <div className="rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-4 text-sm text-white">
-          ✅ FinanceGPT pronto. Dados salvos automaticamente no navegador.
+          ✅ FinanceGPT atualizado: valores corrigidos + áudio ativado.
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -361,7 +489,8 @@ export default function Page() {
 
                 <div className="flex min-h-[460px] flex-col rounded-3xl border border-slate-800 bg-slate-900 p-5">
                   <h2 className="text-xl font-semibold text-white">Chat financeiro</h2>
-                  <p className="mb-4 mt-1 text-sm text-slate-200">Ex: gastei 54,60 no Nils Pizza</p>
+                  <p className="mb-2 mt-1 text-sm text-slate-200">Texto ou áudio. Ex: gastei 54,60 no Nils Pizza</p>
+                  {voiceStatus && <p className={isListening ? "mb-3 text-sm text-emerald-300" : "mb-3 text-sm text-slate-200"}>{voiceStatus}</p>}
 
                   <div className="mb-4 flex-1 space-y-3 overflow-auto">
                     {chat.map((item, index) => (
@@ -379,6 +508,12 @@ export default function Page() {
                       placeholder="Digite seu gasto..."
                       className="min-w-0 flex-1 rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-white placeholder:text-slate-400"
                     />
+                    <button
+                      onClick={handleVoiceInput}
+                      className={isListening ? "rounded-2xl bg-red-500 px-4 py-3 font-semibold text-white" : "rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-white"}
+                    >
+                      {isListening ? "■" : "🎙️"}
+                    </button>
                     <button onClick={() => processMessage(message)} className="rounded-2xl bg-white px-4 py-3 font-semibold text-slate-950">
                       ➤
                     </button>
